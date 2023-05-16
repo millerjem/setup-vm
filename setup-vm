@@ -1,0 +1,450 @@
+#!/usr/bin/env bash
+
+# Deploy Istio
+deployIstio() {
+# IstioLifecycleManager
+kubectl apply ${OPTS} -f - <<EOF
+apiVersion: admin.gloo.solo.io/v2
+kind: IstioLifecycleManager
+metadata:
+  name: istiod-control-plane
+  namespace: gloo-mesh
+spec:
+  installations:
+  - clusters:
+    - defaultRevision: true
+      name: ${CLUSTER_NAME}
+    istioOperatorSpec:
+      components:
+        egressGateways:
+        - enabled: false
+          name: istio-egressgateway
+        ingressGateways:
+        - enabled: false
+          name: istio-ingressgateway
+        - enabled: false
+          name: istio-eastwestgateway
+        pilot:
+          k8s:
+            env:
+            - name: PILOT_ENABLE_K8S_SELECT_WORKLOAD_ENTRIES
+              value: "false"
+      hub: us-docker.pkg.dev/gloo-mesh/istio-workshops
+      meshConfig:
+        accessLogEncoding: JSON
+        accessLogFile: /dev/stdout
+        defaultConfig:
+          holdApplicationUntilProxyStarts: true
+          proxyMetadata:
+            ISTIO_META_DNS_AUTO_ALLOCATE: "true"
+            ISTIO_META_DNS_CAPTURE: "true"
+          tracing:
+            custom_tags:
+              clusterID:
+                environment:
+                  name: ISTIO_META_CLUSTER_ID
+            max_path_tag_length: 256
+        enableTracing: true
+        extensionProviders:
+        - name: zipkincustom
+          zipkin:
+            port: "9411"
+            service: gloo-telemetry-collector.gloo-mesh.svc.cluster.local
+        - envoyOtelAls:
+            service: gloo-telemetry-collector.gloo-mesh.svc.cluster.local
+          name: envoyOtelAls
+        outboundTrafficPolicy:
+          mode: ALLOW_ANY
+        rootNamespace: istio-system
+      namespace: istio-system
+      profile: minimal
+      tag: ${ISTIO_IMAGE_TAG}
+      values:
+        global:
+          meshID: mesh1
+          network: istio-network
+    revision: ${ISTIO_REVISION}
+EOF
+}
+
+# Deploy Gateways
+deployGateway() {
+# GatewayLifecycleManager
+kubectl apply ${OPTS} -f - <<EOF
+apiVersion: admin.gloo.solo.io/v2
+kind: GatewayLifecycleManager
+metadata:
+  name: istio-ingressgateway
+  namespace: gloo-mesh
+spec:
+  installations:
+  - clusters:
+    - activeGateway: true
+      name: ${CLUSTER_NAME}
+    gatewayRevision: ${ISTIO_REVISION}
+    istioOperatorSpec:
+      components:
+        ingressGateways:
+        - enabled: true
+          k8s:
+            service:
+              ports:
+              - name: http2
+                port: 80
+                targetPort: 8080
+              - name: https
+                port: 443
+                targetPort: 8443
+              selector:
+                istio: ingressgateway
+              type: LoadBalancer
+            serviceAnnotations:
+              service.beta.kubernetes.io/aws-load-balancer-nlb-target-type: instance
+              service.beta.kubernetes.io/aws-load-balancer-scheme: internet-facing
+              service.beta.kubernetes.io/aws-load-balancer-type: external
+          label:
+            app: istio-ingressgateway
+            istio: ingressgateway
+            revision: ${ISTIO_REVISION}
+          name: istio-ingressgateway
+          namespace: istio-ingress
+      hub: us-docker.pkg.dev/gloo-mesh/istio-workshops
+      profile: empty
+      tag: ${ISTIO_IMAGE_TAG}
+      values:
+        gateways:
+          istio-ingressgateway:
+            injectionTemplate: gateway
+        global:
+          network: istio-network
+---
+apiVersion: admin.gloo.solo.io/v2
+kind: GatewayLifecycleManager
+metadata:
+  name: istio-eastwestgateway
+  namespace: gloo-mesh
+spec:
+  installations:
+  - clusters:
+    - activeGateway: true
+      name: ${CLUSTER_NAME}
+    gatewayRevision: ${ISTIO_REVISION}
+    istioOperatorSpec:
+      components:
+        ingressGateways:
+        - enabled: true
+          k8s:
+            env:
+            - name: ISTIO_META_ROUTER_MODE
+              value: sni-dnat
+            service:
+              ports:
+              - name: status-port
+                port: 15021
+                targetPort: 15021
+              - name: tls
+                port: 15443
+                targetPort: 15443
+              - name: tls-istiod
+                port: 15012
+                targetPort: 15012
+              - name: tls-webhook
+                port: 15017
+                targetPort: 15017
+              selector:
+                istio: eastwestgateway
+              type: LoadBalancer
+            serviceAnnotations:
+              service.beta.kubernetes.io/aws-load-balancer-nlb-target-type: instance
+              service.beta.kubernetes.io/aws-load-balancer-scheme: internet-facing
+              service.beta.kubernetes.io/aws-load-balancer-type: external
+          label:
+            app: istio-eastwestgateway
+            istio: eastwestgateway
+            revision: ${ISTIO_REVISION}
+          name: istio-eastwestgateway
+          namespace: istio-eastwest
+      hub: us-docker.pkg.dev/gloo-mesh/istio-workshops
+      profile: empty
+      tag: ${ISTIO_IMAGE_TAG}
+EOF
+
+# WorkloadGroup
+kubectl apply ${OPTS} -f - <<EOF
+apiVersion: networking.istio.io/v1beta1
+kind: Gateway
+metadata:
+  name: cross-network-gateway
+  namespace: istio-system
+spec:
+  selector:
+    istio: eastwestgateway
+  servers:
+  - hosts:
+    - '*'
+    port:
+      name: tls-istiod
+      number: 15012
+      protocol: tls
+    tls:
+      mode: PASSTHROUGH
+---
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: istiod-vs
+  namespace: istio-system
+spec:
+  gateways:
+  - cross-network-gateway
+  hosts:
+  - '*'
+  tls:
+  - match:
+    - port: 15012
+      sniHosts:
+      - '*'
+    route:
+    - destination:
+        host: istiod-${ISTIO_REVISION}.istio-system.svc.cluster.local
+        port:
+          number: 15012
+EOF
+}
+
+# Deploy VM
+deployVM() {
+
+# meshctl vm onboard \
+#   --vm-username ubuntu \
+#   --vm-address ec2-18-237-225-236.us-west-2.compute.amazonaws.com \
+#   --ssh-private-key ~/.ssh/aws-demo-infra.pem \
+#   --namespace vm-ads \
+#   --service-account adservice \
+#   --vm-name adservice \
+#   --cluster-id $CLUSTER1 \
+#   --output 16-vm/workdir \
+#   --ingress-svc istio-eastwestgateway.istio-eastwest \
+#   --kubecontext $CLUSTER1 \
+#   --revision 1-17
+
+SERVICE_ACCOUNT=adservice
+VM_APP=adservice
+VM_NAMESPACE=vm-ads
+WORKLOAD_GROUP_FILE=tmp_workload-group.yaml
+
+# Create namespace
+kubectl create namespace ${OPTS} "${VM_NAMESPACE}"
+
+# Create service account
+kubectl create serviceaccount ${OPTS} "${SERVICE_ACCOUNT}" -n "${VM_NAMESPACE}"
+
+# WorkloadGroup
+cat <<-EOF > ${WORKLOAD_GROUP_FILE}
+apiVersion: networking.istio.io/v1beta1
+kind: WorkloadGroup
+metadata:
+  name: ${VM_APP}
+  namespace: ${VM_NAMESPACE}
+spec:
+  metadata:
+    labels:
+      app: ${VM_APP}
+  template:
+    network: vm-network
+    serviceAccount: ${SERVICE_ACCOUNT}
+EOF
+
+kubectl apply ${OPTS} -f ${WORKLOAD_GROUP_FILE}
+
+# Generate VM configuration
+EW_GATEWAY_IP="$(kubectl get services --namespace istio-eastwest istio-eastwestgateway --output jsonpath='{.status.loadBalancer.ingress[0].ip}')"
+
+# Regex to validate IPv4 address
+octet="(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])"  
+ip4="^$octet\\.$octet\\.$octet\\.$octet$"
+
+[[ $EW_GATEWAY_IP =~ $ip4 ]] && {
+  istioctl x workload entry configure --ingressIP ${EW_GATEWAY_IP} --revision ${ISTIO_REVISION} -f ${WORKLOAD_GROUP_FILE} -o "workdir" --clusterID "${CLUSTER_NAME}" --autoregister
+} || exit 1
+
+scp workdir/* ${VM_SSH_USER}@${VM_IP}:
+
+cat <<EOF > tmp_vm_script
+#!/usr/bin/env bash
+
+sudo mkdir -p /etc/certs
+sudo cp "\${HOME}"/root-cert.pem /etc/certs/root-cert.pem
+
+sudo  mkdir -p /var/run/secrets/tokens
+sudo cp "\${HOME}"/istio-token /var/run/secrets/tokens/istio-token
+
+[[ ! -f istio-sidecar.rpm ]] && curl -LO https://storage.googleapis.com/istio-release/releases/1.17.2/rpm/istio-sidecar.rpm
+sudo yum install istio-sidecar.rpm -y
+
+sudo cp "\${HOME}"/cluster.env /var/lib/istio/envoy/cluster.env
+
+sudo cp "\${HOME}"/mesh.yaml /etc/istio/config/mesh
+
+sudo sh -c 'cat \$(eval echo ~\$SUDO_USER)/hosts >> /etc/hosts'
+
+sudo mkdir -p /etc/istio/proxy
+sudo chown -R istio-proxy /var/lib/istio /etc/certs /etc/istio/proxy /etc/istio/config /var/run/secrets /etc/certs/root-cert.pem
+
+sudo systemctl start istio
+EOF
+
+chmod +x tmp_vm_script
+
+scp tmp_vm_script ${VM_SSH_USER}@${VM_IP}:
+}
+
+deploySample() {
+kubectl create ${OPTS} namespace sample
+kubectl label ${OPTS} namespace sample istio.io/rev=${ISTIO_REVISION}
+kubectl apply ${OPTS} -n sample -f https://raw.githubusercontent.com/istio/istio/release-1.17/samples/helloworld/helloworld.yaml
+}
+
+deployExternal() {
+kubectl create ${OPTS} namespace app-team
+kubectl apply ${OPTS} -f - <<EOF
+apiVersion: networking.gloo.solo.io/v2
+kind: ExternalService
+metadata:
+  name: ${VM_APP}
+  namespace: app-team
+spec:
+  hosts:
+  - ${VM_APP}.vm.solo.mesh
+  ports:
+  - name: grpc
+    number: 9555
+    protocol: GRPC
+    clientsideTls:
+      mode: ISTIO_MUTUAL
+  selector:
+    external-service: ${VM_APP}
+---
+apiVersion: networking.gloo.solo.io/v2
+kind: ExternalEndpoint
+metadata:
+  labels:
+    external-service: ${VM_APP}
+  name: ${VM_APP}
+  namespace: app-team
+spec:
+  address: ${VM_IP}
+  ports:
+  - name: grpc
+    number: 9555
+EOF
+}
+
+p() {
+  echo $@
+}
+
+printDebug() {
+  p "# To print out the available service endpoints"
+  p "curl localhost:15000/clusters?format=json > envoy.json"
+  p "istioctl pc endpoints -f envoy.json"
+  p ""
+  p "# To dowload and install istioctl"
+  p "curl -sL https://istio.io/downloadIstioctl | sh -"
+  p "export PATH=\$HOME/.istioctl/bin:\$PATH"
+}
+
+# Defaults
+CLUSTER_NAME="mgmt-cluster"; OPTS=""; ISTIO_REVISION="1-16"; ISTIO_IMAGE_TAG="1.16.2-solo"; VM_IP="10.0.0.131"; VM_SSH_PRIVATE_KEY=~/.id_rsa; VM_SSH_USER="jmiller"
+
+# Capture args
+usage() {
+cat <<EOF
+
+  Usage: setup-vm [options]
+    -c --cluster    Cluster name the default values is $CLUSTER_NAME
+    -i --istio      Deploys Istio using IstioLifecycleManager
+    -g --gateway    Deploys Istio using GatewayLifecycleManager
+    -r --rev        Sets the Istio revision number the default value is $ISTIO_REVISION
+    -t --tag        Sets the Istio image tag the default value is $ISTIO_IMAGE_TAG
+    -v --vm         Deploys VM
+    -s --sample     Deploys a sample application helloworld
+    -e --external   Deploys the external service
+    -d --debug      Prints debug commands
+    -h --help       Prints usage
+EOF
+  exit 1;
+}
+
+# Transform long options to short ones
+for arg in "$@"; do
+  shift
+  case "$arg" in
+    '--help')      set -- "$@" '-h'   ;;
+    '--cluster')   set -- "$@" '-c'   ;;
+    '--istio')     set -- "$@" '-i'   ;;
+    '--rev')       set -- "$@" '-r'   ;;
+    '--image-tag') set -- "$@" '-t'   ;;
+    '--gateways')  set -- "$@" '-g'   ;;
+    '--dry-run')   set -- "$@" '-d'   ;;
+    '--vm')        set -- "$@" '-v'   ;;
+    '--sample')    set -- "$@" '-s'   ;;
+    '--external')  set -- "$@" '-e'   ;;
+    '--print')     set -- "$@" '-p'   ;;
+    *)             set -- "$@" "$arg" ;;
+  esac
+done
+
+optstring=":c:digvrtseph"
+
+while getopts "${optstring}" options; do         
+  case "${options}" in
+    c)
+      CLUSTER_NAME=${OPTARG}
+      ;;
+    d)
+      OPTS="--dry-run=client -o yaml"
+      ;;
+    r)
+      ISTIO_REVISION=${OPTARG}
+      ;;
+    t)
+      ISTIO_TAG=${OPTARG}
+      ;;
+    :)
+      echo "Error: -${OPTARG} requires an argument."
+      usage
+      ;;
+  esac
+done
+
+OPTIND=1
+
+while getopts "${optstring}" options; do         
+  case "${options}" in
+    i)
+      deployIstio
+      ;;
+    g)
+      deployGateway
+      ;;
+    v)
+      deployVM
+      ;;
+    s)
+      deploySample
+      ;;
+    p)
+      printDebug
+      ;;
+    :)
+      echo "Error: -${OPTARG} requires an argument."
+      usage
+      ;;
+    h)
+      usage
+      ;;
+  esac
+done
+
+[[ ${OPTIND} == 1 ]] && usage 
