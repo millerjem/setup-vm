@@ -405,7 +405,7 @@ while getopts "${optstring}" options; do
       CLUSTER_NAME=${OPTARG}
       ;;
     d)
-      OPTS="--dry-run=client -o yaml"
+      OPTS="${OPTS_DEFAULTS}"
       ;;
     r)
       ISTIO_REVISION=${OPTARG}
