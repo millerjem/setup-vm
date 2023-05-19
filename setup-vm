@@ -258,7 +258,7 @@ EOF
 kubectl apply ${OPTS} -f ${WORKLOAD_GROUP_FILE}
 
 # Generate VM configuration
-[[ -z EW_GATEWAY_IP ]] && EW_GATEWAY_IP="$(kubectl get services --namespace istio-eastwest istio-eastwestgateway --output jsonpath='{.status.loadBalancer.ingress[0].ip}')"
+[[ -z "$EW_GATEWAY_IP" ]] && EW_GATEWAY_IP="$(kubectl get services --namespace istio-eastwest istio-eastwestgateway --output jsonpath='{.status.loadBalancer.ingress[0].ip}')"
 
 # Regex to validate IPv4 address
 octet="(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])"  
@@ -268,7 +268,7 @@ ip4="^$octet\\.$octet\\.$octet\\.$octet$"
   istioctl x workload entry configure --ingressIP ${EW_GATEWAY_IP} --revision ${ISTIO_REVISION} -f ${WORKLOAD_GROUP_FILE} -o "workdir" --clusterID "${CLUSTER_NAME}" --autoregister
 } || exit 1
 
-scp workdir/* ${VM_SSH_USER}@${VM_IP}:
+scp -i ${VM_SSH_PRIVATE_KEY} workdir/* ${VM_SSH_USER}@${VM_IP}:
 
 cat <<EOF > tmp_vm_script
 #!/usr/bin/env bash
@@ -296,7 +296,7 @@ EOF
 
 chmod +x tmp_vm_script
 
-scp tmp_vm_script ${VM_SSH_USER}@${VM_IP}:
+scp -i ${VM_SSH_PRIVATE_KEY} tmp_vm_script ${VM_SSH_USER}@${VM_IP}:
 }
 
 deploySample() {
@@ -355,7 +355,7 @@ printDebug() {
 }
 
 # Defaults
-CLUSTER_NAME="mgmt-cluster"; OPTS=""; ISTIO_REVISION="1-16"; ISTIO_IMAGE_TAG="1.16.2-solo"; VM_IP="35.86.176.155"; VM_SSH_PRIVATE_KEY=~/.ssh/jmiller-vm.pem; VM_SSH_USER="ec2-user"
+source setup-vm.conf
 
 # Capture args
 usage() {
