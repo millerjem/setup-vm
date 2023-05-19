@@ -355,7 +355,7 @@ printDebug() {
 }
 
 # Defaults
-CLUSTER_NAME="mgmt-cluster"; OPTS=""; ISTIO_REVISION="1-16"; ISTIO_IMAGE_TAG="1.16.2-solo"; VM_IP="10.0.0.131"; VM_SSH_PRIVATE_KEY=~/.id_rsa; VM_SSH_USER="jmiller"
+CLUSTER_NAME="mgmt-cluster"; OPTS=""; ISTIO_REVISION="1-16"; ISTIO_IMAGE_TAG="1.16.2-solo"; VM_IP="35.86.176.155"; VM_SSH_PRIVATE_KEY=~/.ssh/jmiller-vm.pem; VM_SSH_USER="ec2-user"
 
 # Capture args
 usage() {
@@ -397,7 +397,7 @@ for arg in "$@"; do
   esac
 done
 
-optstring=":c:digvartseph"
+optstring=":c:digva:r:t:seph"
 
 while getopts "${optstring}" options; do         
   case "${options}" in
