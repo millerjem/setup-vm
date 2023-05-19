@@ -258,7 +258,7 @@ EOF
 kubectl apply ${OPTS} -f ${WORKLOAD_GROUP_FILE}
 
 # Generate VM configuration
-EW_GATEWAY_IP="$(kubectl get services --namespace istio-eastwest istio-eastwestgateway --output jsonpath='{.status.loadBalancer.ingress[0].ip}')"
+[[ -z EW_GATEWAY_IP ]] && EW_GATEWAY_IP="$(kubectl get services --namespace istio-eastwest istio-eastwestgateway --output jsonpath='{.status.loadBalancer.ingress[0].ip}')"
 
 # Regex to validate IPv4 address
 octet="(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])"  
@@ -368,6 +368,7 @@ cat <<EOF
     -r --rev        Sets the Istio revision number the default value is $ISTIO_REVISION
     -t --tag        Sets the Istio image tag the default value is $ISTIO_IMAGE_TAG
     -v --vm         Deploys VM
+    -a --addr       Sets the IPv4 address of the east west gateway
     -s --sample     Deploys a sample application helloworld
     -e --external   Deploys the external service
     -d --debug      Prints debug commands
@@ -388,6 +389,7 @@ for arg in "$@"; do
     '--gateways')  set -- "$@" '-g'   ;;
     '--dry-run')   set -- "$@" '-d'   ;;
     '--vm')        set -- "$@" '-v'   ;;
+    '--addr')      set -- "$@" '-a'   ;;
     '--sample')    set -- "$@" '-s'   ;;
     '--external')  set -- "$@" '-e'   ;;
     '--print')     set -- "$@" '-p'   ;;
@@ -395,7 +397,7 @@ for arg in "$@"; do
   esac
 done
 
-optstring=":c:digvrtseph"
+optstring=":c:digvartseph"
 
 while getopts "${optstring}" options; do         
   case "${options}" in
@@ -410,6 +412,9 @@ while getopts "${optstring}" options; do
       ;;
     t)
       ISTIO_TAG=${OPTARG}
+      ;;
+    a)
+      EW_GATEWAY_IP=${OPTARG}
       ;;
     :)
       echo "Error: -${OPTARG} requires an argument."
