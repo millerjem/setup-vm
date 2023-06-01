@@ -29,6 +29,12 @@ spec:
             env:
             - name: PILOT_ENABLE_K8S_SELECT_WORKLOAD_ENTRIES
               value: "false"
+            # Virtual Machine registration
+            - name: PILOT_ENABLE_WORKLOAD_ENTRY_AUTOREGISTRATION
+              value: "true"
+            # Virtual Machine health checks
+            - name: PILOT_ENABLE_WORKLOAD_ENTRY_HEALTHCHECKS
+              value: "true"
       hub: us-docker.pkg.dev/gloo-mesh/istio-workshops
       meshConfig:
         accessLogEncoding: JSON
@@ -140,6 +146,8 @@ spec:
             env:
             - name: ISTIO_META_ROUTER_MODE
               value: sni-dnat
+            - name: ISTIO_META_REQUESTED_NETWORK_VIEW
+              value: istio-network
             service:
               ports:
               - name: status-port
@@ -165,6 +173,7 @@ spec:
             app: istio-eastwestgateway
             istio: eastwestgateway
             revision: ${ISTIO_REVISION}
+            topology.istio.io/network: istio-network
           name: istio-eastwestgateway
           namespace: istio-eastwest
       hub: us-docker.pkg.dev/gloo-mesh/istio-workshops
