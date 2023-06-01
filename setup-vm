@@ -71,6 +71,7 @@ EOF
 deployGateway() {
 # GatewayLifecycleManager
 kubectl apply ${OPTS} -f - <<EOF
+---
 apiVersion: admin.gloo.solo.io/v2
 kind: GatewayLifecycleManager
 metadata:
@@ -117,6 +118,8 @@ spec:
             injectionTemplate: gateway
         global:
           network: istio-network
+EOF
+kubectl apply ${OPTS} -f - <<EOF
 ---
 apiVersion: admin.gloo.solo.io/v2
 kind: GatewayLifecycleManager
@@ -171,6 +174,7 @@ EOF
 
 # WorkloadGroup
 kubectl apply ${OPTS} -f - <<EOF
+---
 apiVersion: networking.istio.io/v1beta1
 kind: Gateway
 metadata:
@@ -188,6 +192,8 @@ spec:
       protocol: tls
     tls:
       mode: PASSTHROUGH
+EOF
+kubectl apply ${OPTS} -f - <<EOF
 ---
 apiVersion: networking.istio.io/v1beta1
 kind: VirtualService
@@ -227,11 +233,6 @@ deployVM() {
 #   --ingress-svc istio-eastwestgateway.istio-eastwest \
 #   --kubecontext $CLUSTER1 \
 #   --revision 1-17
-
-SERVICE_ACCOUNT=adservice
-VM_APP=adservice
-VM_NAMESPACE=vm-ads
-WORKLOAD_GROUP_FILE=tmp_workload-group.yaml
 
 # Create namespace
 kubectl create namespace ${OPTS} "${VM_NAMESPACE}"
@@ -308,6 +309,7 @@ kubectl apply ${OPTS} -n sample -f https://raw.githubusercontent.com/istio/istio
 deployExternal() {
 kubectl create ${OPTS} namespace app-team
 kubectl apply ${OPTS} -f - <<EOF
+---
 apiVersion: networking.gloo.solo.io/v2
 kind: ExternalService
 metadata:
@@ -324,6 +326,8 @@ spec:
       mode: ISTIO_MUTUAL
   selector:
     external-service: ${VM_APP}
+EOF
+kubectl apply ${OPTS} -f - <<EOF
 ---
 apiVersion: networking.gloo.solo.io/v2
 kind: ExternalEndpoint
