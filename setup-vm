@@ -315,7 +315,7 @@ kubectl label ${OPTS} namespace sample istio.io/rev=${ISTIO_REVISION}
 kubectl apply ${OPTS} -n sample -f https://raw.githubusercontent.com/istio/istio/release-1.17/samples/helloworld/helloworld.yaml
 }
 
-deployExternal() {
+deployExternalService() {
 kubectl create ${OPTS} namespace app-team
 kubectl apply ${OPTS} -f - <<EOF
 ---
@@ -452,6 +452,9 @@ while getopts "${optstring}" options; do
       ;;
     s)
       deploySample
+      ;;
+    e)
+      deployExternalService
       ;;
     p)
       printDebug
