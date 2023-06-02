@@ -179,6 +179,12 @@ spec:
       hub: us-docker.pkg.dev/gloo-mesh/istio-workshops
       profile: empty
       tag: ${ISTIO_IMAGE_TAG}
+      values:
+        gateways:
+          istio-ingressgateway:
+            injectionTemplate: gateway
+        global:
+          network: istio-network
 EOF
 
 # WorkloadGroup
