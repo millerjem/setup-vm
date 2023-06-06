@@ -28,7 +28,7 @@ spec:
           k8s:
             env:
             - name: PILOT_ENABLE_K8S_SELECT_WORKLOAD_ENTRIES
-              value: "false"
+              value: "true"
             # Virtual Machine registration
             - name: PILOT_ENABLE_WORKLOAD_ENTRY_AUTOREGISTRATION
               value: "true"
@@ -68,7 +68,15 @@ spec:
       values:
         global:
           meshID: mesh1
+          multiCluster:
+            clusterName: ${CLUSTER_NAME}            
           network: istio-network
+          meshNetworks:
+            istio-network:
+              gateways:
+              - address: ${K8S_NODE_IP_ADDRESS}
+                port: ${K8S_NODE_PORT_FOR_15443}
+                registryServiceName: istio-eastwestgateway.istio-system.svc.cluster.local
     revision: ${ISTIO_REVISION}
 EOF
 }
@@ -104,7 +112,7 @@ spec:
                 targetPort: 8443
               selector:
                 istio: ingressgateway
-              type: LoadBalancer
+              type: ${SERVICE_TYPE}
             serviceAnnotations:
               service.beta.kubernetes.io/aws-load-balancer-nlb-target-type: instance
               service.beta.kubernetes.io/aws-load-balancer-scheme: internet-facing
@@ -113,8 +121,9 @@ spec:
             app: istio-ingressgateway
             istio: ingressgateway
             revision: ${ISTIO_REVISION}
+            topology.istio.io/network: istio-network
           name: istio-ingressgateway
-          namespace: istio-ingress
+          namespace: istio-system
       hub: us-docker.pkg.dev/gloo-mesh/istio-workshops
       profile: empty
       tag: ${ISTIO_IMAGE_TAG}
@@ -124,7 +133,7 @@ spec:
             injectionTemplate: gateway
         global:
           network: istio-network
-EOF
+EOF 
 kubectl apply ${OPTS} -f - <<EOF
 ---
 apiVersion: admin.gloo.solo.io/v2
@@ -155,16 +164,18 @@ spec:
                 targetPort: 15021
               - name: tls
                 port: 15443
+                nodePort: ${K8S_NODE_PORT_FOR_15443}
                 targetPort: 15443
               - name: tls-istiod
                 port: 15012
+                nodePort: ${K8S_NODE_PORT_FOR_15012}
                 targetPort: 15012
-              - name: tls-webhook
+              - name: tls-istiodwebhook
                 port: 15017
                 targetPort: 15017
               selector:
                 istio: eastwestgateway
-              type: LoadBalancer
+              type: ${SERVICE_TYPE}
             serviceAnnotations:
               service.beta.kubernetes.io/aws-load-balancer-nlb-target-type: instance
               service.beta.kubernetes.io/aws-load-balancer-scheme: internet-facing
@@ -175,7 +186,7 @@ spec:
             revision: ${ISTIO_REVISION}
             topology.istio.io/network: istio-network
           name: istio-eastwestgateway
-          namespace: istio-eastwest
+          namespace: istio-system
       hub: us-docker.pkg.dev/gloo-mesh/istio-workshops
       profile: empty
       tag: ${ISTIO_IMAGE_TAG}
@@ -190,7 +201,7 @@ EOF
 # WorkloadGroup
 kubectl apply ${OPTS} -f - <<EOF
 ---
-apiVersion: networking.istio.io/v1beta1
+apiVersion: networking.istio.io/v1alpha3
 kind: Gateway
 metadata:
   name: cross-network-gateway
@@ -199,14 +210,42 @@ spec:
   selector:
     istio: eastwestgateway
   servers:
-  - hosts:
-    - '*'
-    port:
-      name: tls-istiod
-      number: 15012
-      protocol: tls
-    tls:
-      mode: PASSTHROUGH
+    - port:
+        number: 15443
+        name: tls
+        protocol: TLS
+      tls:
+        mode: AUTO_PASSTHROUGH
+      hosts:
+        - "*.local"
+EOF
+kubectl apply ${OPTS} -f - <<EOF
+---
+apiVersion: networking.istio.io/v1beta1
+kind: Gateway
+metadata:
+  name: istiod-gateway
+  namespace: istio-system
+spec:
+  selector:
+    istio: eastwestgateway
+  servers:
+    - port:
+        name: tls-istiod
+        number: 15012
+        protocol: tls
+      tls:
+        mode: PASSTHROUGH        
+      hosts:
+        - "*"
+    - port:
+        name: tls-istiodwebhook
+        number: 15017
+        protocol: tls
+      tls:
+        mode: PASSTHROUGH          
+      hosts:
+        - "*"
 EOF
 kubectl apply ${OPTS} -f - <<EOF
 ---
@@ -217,7 +256,7 @@ metadata:
   namespace: istio-system
 spec:
   gateways:
-  - cross-network-gateway
+  - istiod-gateway
   hosts:
   - '*'
   tls:
@@ -230,6 +269,15 @@ spec:
         host: istiod-${ISTIO_REVISION}.istio-system.svc.cluster.local
         port:
           number: 15012
+  - match:
+    - port: 15017
+      sniHosts:
+      - "*"
+    route:
+    - destination:
+        host: istiod-${ISTIO_REVISION}.istio-system.svc.cluster.local
+        port:
+          number: 443
 EOF
 }
 
@@ -274,14 +322,14 @@ EOF
 kubectl apply ${OPTS} -f ${WORKLOAD_GROUP_FILE}
 
 # Generate VM configuration
-[[ -z "$EW_GATEWAY_IP" ]] && EW_GATEWAY_IP="$(kubectl get services --namespace istio-eastwest istio-eastwestgateway --output jsonpath='{.status.loadBalancer.ingress[0].ip}')"
+[[ -z "$EW_GATEWAY_IP" ]] && EW_GATEWAY_IP="$(kubectl get services --namespace istio-istio istio-eastwestgateway --output jsonpath='{.status.loadBalancer.ingress[0].ip}')"
 
 # Regex to validate IPv4 address
 octet="(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])"  
 ip4="^$octet\\.$octet\\.$octet\\.$octet$"
 
 [[ $EW_GATEWAY_IP =~ $ip4 ]] && {
-  istioctl x workload entry configure --ingressIP ${EW_GATEWAY_IP} --revision ${ISTIO_REVISION} -f ${WORKLOAD_GROUP_FILE} -o "workdir" --clusterID "${CLUSTER_NAME}" --autoregister
+  istioctl x workload entry configure --ingressIP ${EW_GATEWAY_IP} --externalIP ${VM_IP} --revision ${ISTIO_REVISION} -f ${WORKLOAD_GROUP_FILE} -o "workdir" --clusterID "${CLUSTER_NAME}" --autoregister
 } || exit 1
 
 scp -i ${VM_SSH_PRIVATE_KEY} workdir/* ${VM_SSH_USER}@${VM_IP}:
@@ -323,20 +371,23 @@ kubectl apply ${OPTS} -n sample -f https://raw.githubusercontent.com/istio/istio
 
 deployExternalService() {
 kubectl create ${OPTS} namespace app-team
+kubectl label ${OPTS} namespace app-team istio.io/rev=${ISTIO_REVISION}
 kubectl apply ${OPTS} -f - <<EOF
 ---
 apiVersion: networking.gloo.solo.io/v2
 kind: ExternalService
 metadata:
   name: ${VM_APP}
-  namespace: app-team
+  namespace: vm-nginx
 spec:
   hosts:
   - ${VM_APP}.vm.solo.mesh
+  addresses:
+  - ${VM_IP}
   ports:
-  - name: grpc
-    number: 9555
-    protocol: GRPC
+  - name: http
+    number: 8080
+    protocol: TCP
     clientsideTls:
       mode: ISTIO_MUTUAL
   selector:
@@ -350,12 +401,12 @@ metadata:
   labels:
     external-service: ${VM_APP}
   name: ${VM_APP}
-  namespace: app-team
+  namespace: vm-nginx
 spec:
-  address: ${VM_IP}
+  address: ${VM_HOSTNAME}
   ports:
-  - name: grpc
-    number: 9555
+  - name: http
+    number: 8080
 EOF
 }
 
