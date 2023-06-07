@@ -28,7 +28,7 @@ spec:
           k8s:
             env:
             - name: PILOT_ENABLE_K8S_SELECT_WORKLOAD_ENTRIES
-              value: "true"
+              value: "false"
             # Virtual Machine registration
             - name: PILOT_ENABLE_WORKLOAD_ENTRY_AUTOREGISTRATION
               value: "true"
@@ -133,7 +133,7 @@ spec:
             injectionTemplate: gateway
         global:
           network: istio-network
-EOF 
+EOF
 kubectl apply ${OPTS} -f - <<EOF
 ---
 apiVersion: admin.gloo.solo.io/v2
@@ -164,11 +164,11 @@ spec:
                 targetPort: 15021
               - name: tls
                 port: 15443
-                nodePort: ${K8S_NODE_PORT_FOR_15443}
+                nodePort: ${K8S_NODE_PORT_15443}
                 targetPort: 15443
               - name: tls-istiod
                 port: 15012
-                nodePort: ${K8S_NODE_PORT_FOR_15012}
+                nodePort: ${K8S_NODE_PORT_15012}
                 targetPort: 15012
               - name: tls-istiodwebhook
                 port: 15017
@@ -197,11 +197,10 @@ spec:
         global:
           network: istio-network
 EOF
-
 # WorkloadGroup
 kubectl apply ${OPTS} -f - <<EOF
 ---
-apiVersion: networking.istio.io/v1alpha3
+apiVersion: networking.istio.io/v1beta1
 kind: Gateway
 metadata:
   name: cross-network-gateway
@@ -369,29 +368,50 @@ kubectl label ${OPTS} namespace sample istio.io/rev=${ISTIO_REVISION}
 kubectl apply ${OPTS} -n sample -f https://raw.githubusercontent.com/istio/istio/release-1.17/samples/helloworld/helloworld.yaml
 }
 
+deployServiceEntry() {
+kubectl apply ${OPTS} -f - <<EOF
+---
+apiVersion: networking.istio.io/v1alpha3
+kind: ServiceEntry
+metadata:
+  name: ${VM_APP}-svc
+  namespace: ${VM_NAMESPACE}
+spec:
+  hosts:
+  - ${VM_APP}.${VM_NAMESPACE}
+  location: MESH_INTERNAL
+  ports:
+  - number: 80
+    name: http
+    protocol: HTTP
+  resolution: STATIC
+  workloadSelector:
+    labels:
+      app: ${VM_APP}
+EOF
+}
+
 deployExternalService() {
-kubectl create ${OPTS} namespace app-team
-kubectl label ${OPTS} namespace app-team istio.io/rev=${ISTIO_REVISION}
 kubectl apply ${OPTS} -f - <<EOF
 ---
 apiVersion: networking.gloo.solo.io/v2
 kind: ExternalService
 metadata:
-  name: ${VM_APP}
-  namespace: vm-nginx
+  name: ${VM_APP}-svc
+  namespace: ${VM_NAMESPACE}
 spec:
   hosts:
-  - ${VM_APP}.vm.solo.mesh
+  - ${VM_APP}.vm-nginx
   addresses:
   - ${VM_IP}
   ports:
   - name: http
-    number: 8080
-    protocol: TCP
-    clientsideTls:
-      mode: ISTIO_MUTUAL
+    number: 80
+    protocol: HTTP
+    targetPort:
+      number: 80
   selector:
-    external-service: ${VM_APP}
+    external-endpoint: ${VM_APP}
 EOF
 kubectl apply ${OPTS} -f - <<EOF
 ---
@@ -399,14 +419,14 @@ apiVersion: networking.gloo.solo.io/v2
 kind: ExternalEndpoint
 metadata:
   labels:
-    external-service: ${VM_APP}
+    external-endpoint: ${VM_APP}
   name: ${VM_APP}
-  namespace: vm-nginx
+  namespace: ${VM_NAMESPACE}
 spec:
-  address: ${VM_HOSTNAME}
+  address: ${VM_IP}
   ports:
   - name: http
-    number: 8080
+    number: 80
 EOF
 }
 
@@ -511,7 +531,7 @@ while getopts "${optstring}" options; do
       deploySample
       ;;
     e)
-      deployExternalService
+      deployServiceEntry
       ;;
     p)
       printDebug
